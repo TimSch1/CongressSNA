@@ -1,0 +1,192 @@
+---
+title: '113th Congress Network Analysis: Does Coopertivity influence Electability?'
+author: "Tim Schmeier"
+date: "Monday, February 09, 2015"
+output: html_document
+---
+This analysis explores coopertivity among members of the House of Representatives during the 113th Congress and its subsequent influence on the elections in 2014. This analysis considers coopertivity as working within or across party lines to cosponsor successful, relevant legislation. I have defined relevant legislation as both temporal and publically impactful. As such, legislation renaming public spaces as well as posthumous awards of valor were discluded from this analysis. The primary methodology used to investigate this question is Social Network Analysis which is the study of relationships (edges) between actors. The terminology and concepts of SNA relevent to this discussion will be describe briefly throughout. 
+
+```{r, warning=FALSE, message=FALSE}
+Congress = read.csv('C:/Users/TimBo/Downloads/R docs and scripts/CongressSNA/113thCongress.csv', header = TRUE)
+Congress = Congress[,-c(13,14,18,20,23,24,26,33,51,60,62,77)]
+Congress[is.na(Congress)] = 0
+```
+
+This code separates the House from the Senate, distinguishes the two Mike Rogers in the House, and makes the character strings uniform.
+
+```{r, warning=FALSE, message=FALSE}
+library(stringr)
+Reps = str_detect(Congress$Senator.Rep, 'Rep')
+Congress = Congress[Reps,]
+Congress$Senator.Rep = gsub('Rep', '', Congress$Senator.Rep)
+Congress$Senator.Rep = str_trim(Congress$Senator.Rep, side='both')
+grep('Rogers, Mike', Congress$Senator.Rep)
+Congress$Senator.Rep[233] = 'Rogers1, Mike'
+```
+
+The following code creates an edgelist of degrees (connections, defined as cosponsored legislation) between members of the same party and members of the opposite party to be used as features for a later model.
+
+```{r, warning=FALSE, message=FALSE}
+library(plyr)
+library(dplyr)
+DHouse = filter(Congress, Party == 'D')
+RHouse = filter(Congress, Party == 'R')
+rownames(RHouse) = RHouse$Senator.Rep
+rownames(DHouse) = DHouse$Senator.Rep
+DHouse = DHouse[,-(1:2)]
+RHouse = RHouse[,-(1:2)]
+DemsWithin = rowSums(as.matrix(DHouse) %*%t(as.matrix(DHouse)))
+RepsWithin = rowSums(as.matrix(RHouse) %*%t(as.matrix(RHouse)))
+Coopertivity = rowSums(as.matrix(DHouse) %*%t(as.matrix(RHouse)))
+Coopertivity2 = rowSums(as.matrix(RHouse) %*%t(as.matrix(DHouse)))
+WithinParty = c(RepsWithin, DemsWithin)
+AcrossAisle = c(Coopertivity, Coopertivity2)
+Links = merge(WithinParty,AcrossAisle,by=0)
+colnames(Links) = c('Name','Within','Coopertivity')
+```
+
+One primary question in SNA is that of centrality; how important or how much influence does an actor have in their community? Betweenness is defined as the number of shortest paths between any two community members an actor is enclosed by. Another common measure of centrality is the Eigenvector Centrality, which weights links to important actors more than links to unimportant actors. These metrics are approximately linear, so outliers are of interest. A large negative residual with low eigenvector centrality suggests a "gate-keeper", an actor controlling access to leadership. In contrast, a large positive residual and low betweenness indicates a "pulse-taker" an actor with unique access to leadership and a potential successor to leadership positions.
+
+```{r, warning=FALSE, message=FALSE}
+rownames(Congress) = Congress$Senator.Rep
+Party = Congress$Party
+Congress = Congress[,-(1:2)]
+CongressAdj = as.matrix(Congress) %*% t(as.matrix(Congress))
+
+library(igraph)
+g = graph.adjacency(CongressAdj, mode = 'undirected', weighted = TRUE)
+g= simplify(g)
+HouseCent = data.frame(bet = betweenness(g), eig = evcent(g)$vector)
+HouseCent = transform(HouseCent, res = lm(eig~bet, data= HouseCent)$residuals)
+
+library(ggplot2)
+Actors = ggplot(HouseCent, (aes(x=bet, y=eig, label = rownames(HouseCent), 
+                      color=Party, size = abs(res)))) + xlab('Betweenness Centrality')+
+                      ylab('Eigenvector Centrality')
+
+Actors+scale_color_manual(values=c('blue','red')) + geom_text() + scale_size("Residuals")+
+      labs(title = 'Eigenvector and Betweenness Centrality')
+```
+
+As seen in the Figure Peter King and Ben Ray Lujan appear to be the gate-keepers for the Republican and Democratic Parties respectively while Pat Meehan, Walter Jones, Pete Olson are the legislative leadership group with the largest number of important connections. The pulse-takers appear beneath the leadership group. Next the 113th congress was visualized with a network graph.
+
+```{r, warning=FALSE, message=FALSE}
+V(g)$color = ifelse(Party == 'D', 'blue', 'red')
+nodes = V(g)$name
+V(g)$label.cex = 0.5
+V(g)$label.color='black'
+layout1 = layout.fruchterman.reingold(g, niter=500)
+set.seed(200)
+plot.new()
+plot(g, layout1, vertex.label = nodes, vertex.size = HouseCent$bet^(1/3), edge.width=E(g)$weight)
+```
+
+It is difficult to see anything from this plot, resolution is lost because of the 3 outliers. However it is worth noting the connection from Eleanor Norton to Darrell Issa. As a non-voting delegate from Washington   D.C. Eleanor Norton may be introducing legislation through a proxy. To gain additional insight, this network is replotted focusing on the core network; only actors with over 10 connections are included. The vertex size is plotted as a function of betweenness and only names of the most imporant congress members are included.  
+
+```{r, warning=FALSE, message=FALSE}
+cores = graph.coreness(g)
+g2 = induced.subgraph(g, as.vector(which(cores>10)))
+nodes = as.vector(V(g2))
+nodes = V(g2)$name
+nodes[which(HouseCent$eig<.5)] = NA
+layout2 = layout.fruchterman.reingold(g2, niter=500)
+plot(g2, layout = layout2, vertex.label=nodes, vertex.size = HouseCent$bet^(1/3), vertex.label.dist = 0.25, vertex.label.color = 'black')
+```
+
+Unsurprisingly, the largest vertexes and the majority of important congress members are in the center of the plot. More interesting are the 10 congress members connecting outside congressional members to the inner core thus possessing a large betweenness and (relative to their position) an enhanced eigenvector centrality. Also remarkable is the structure apparent in the network, there appear to be a multitude of clusters, some dominated by democrats, others by republicans, and a few cooperative clusters which are more evenly balanced between the two parties. This observation prompted two clustering analyses. A hierarchical clustering analysis and a walktrap community analysis (an algorithm exploiting the property that random walks of limited length have a high probability of remaining within the same community).
+
+```{r, warning=FALSE, message=FALSE}
+library(sna)
+library(ggdendro)
+set.seed(200)
+Clust = equiv.clust(CongressAdj, method='hamming', cluster.method='ward.D')
+hClustAssignments = cutree(Clust$cluster, k=6)
+den = as.dendrogram(Clust$cluster)
+ddata = dendro_data(den, type='rectangle')
+ddata$labels[,3] = rownames(CongressAdj)
+ddata$labels = cbind(ddata$labels, Party)
+
+ggplot() +
+       geom_segment(data=segment(ddata), aes(x=x, y=y, xend=xend, yend=yend)) +
+       geom_text(data = label(ddata), aes(x=x, y=y, label=label, colour = Party, hjust=0), size=1) +
+       geom_point(data = label(ddata), aes(x=x, y=y), size=3, shape = 21) +
+       coord_flip() +
+       scale_y_reverse(expand=c(0.2, 0)) +
+       scale_colour_manual(values=c('blue','red')) + 
+       theme_dendro()
+
+set.seed(200)
+wc = walktrap.community(g)
+walktrapComm = wc$membership
+plot(wc, g)
+```
+
+Removing the outliers following a similar procedure gives the following plot.
+
+```{r, echo=FALSE}
+detach('package:sna', unload=T)
+library(igraph)
+Congress2 = Congress[-c(49,343,349),]
+CongressAdj2 = as.matrix(Congress2) %*% t(as.matrix(Congress2))
+g3 = graph.adjacency(CongressAdj2, mode = 'undirected', weighted = TRUE)
+g3 = simplify(g3)
+V(g3)$label = V(g3)$name
+V(g3)$label.cex = 0.4
+V(g3)$label.color='black'
+wc2 = walktrap.community(g3)
+plot(wc2, g3)
+```
+
+Both clustering algorithms identified groups within Congress that were comprised of partisan and cooperative congress members. The composition of each cluster is shown below.
+
+```{r}
+table(Party, wc$membership)
+table(Party, hClustAssignments)
+```
+
+A covariate, the number of previous terms, as well as the results of the 2014 election were scraped from Wikipedia's website with the following code and the various dataframes were merged for modeling.
+
+```{r}
+library(rvest)
+wiki = html('http://en.wikipedia.org/wiki/United_States_House_of_Representatives_elections,_2014')
+Elect = wiki%>%
+html_nodes('td a:nth-child(1)') %>%
+html_text()
+
+Elect = Elect[212:1530] #clean scraped data
+Elect = Elect[-c(45,58,65,171,238,350,378,382,395,489,547,554,648,712,741,892,899,968,1023,1204)]
+
+vect = rep(1:3, length(Elect)/3)
+Name = Elect[vect==1]; Terms = Elect[vect==2]; Winner = Elect[vect==3]
+Elect = data.frame(Name, Terms, Winner) #create dataframe
+Elect$Winner = ifelse(Elect$Name==Winner, 1, 0) #code election outcome 
+Elect$Terms = cut(as.numeric(as.character(Elect$Terms)), 
+                  seq(from = 2014, to = 1954, by = -2)) #create covariate
+levels(Elect$Terms) = seq(from = 30, to = 1, by=-1)
+
+Elect$Name = sapply(Elect$Name, function(x) strsplit(as.character(x), split=' ')) #reverse names
+Elect$Name = sapply(Elect$Name, rev)
+Elect$Name = unlist(lapply(Elect$Name, paste, collapse = ', '))
+
+Coopertivity = data.frame(Name = rownames(CongressAdj), Party = Party, 
+                          hClustAssign = hClustAssignments, wtComm = walktrapComm)
+Coopertivity = merge(Coopertivity, Links, by='Name')
+Coopertivity = merge(Coopertivity, Elect, by='Name')
+head(Coopertivity)
+```
+```{r, echo=FALSE}
+setwd("C:/Users/TimBo/Downloads/R docs and scripts")
+source('regress.r')
+
+```
+
+```{r, warning=FALSE, message=FALSE}
+mod1 = glm(Winner~Party+hClustAssign+wtComm+Within+Coopertivity+Terms, 
+           family=binomial, data=Coopertivity)
+mod2 = step.up(mod1)
+mod3 = step(mod2)
+summary(mod3)
+```
+
+Unfortunately, the performance of all linear and bilinear models is poor. All models failed to significantly improve prediction as compared to the null model. The covariate, the number of terms in office, was the only significant predictor. While bilinear term coopertivity*term was significant and the linear coopertivity term trending toward significance the coefficients are so small that cross-party coopertivity is unlikely to influence election results. With this result we conclude that congress members may rest assured, America will not punish them at the ballot box for reaching across the aisle to pass important legislation.
+
